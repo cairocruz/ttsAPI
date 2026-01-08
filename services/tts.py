@@ -15,6 +15,36 @@ async def generate_speech(text, voice, output_path):
     await communicate.save(output_path)
     return output_path
 
+
+async def generate_speech_with_word_boundaries(text, voice, output_path):
+    """
+    Generates MP3 audio and returns word boundary timings.
+
+    Returns a list of dicts: {"offset_s": float, "duration_s": float, "text": str}
+    where offset/duration are relative to the start of this audio.
+    """
+    communicate = edge_tts.Communicate(text, voice, boundary="WordBoundary")
+    word_boundaries = []
+
+    # edge-tts stream provides both audio chunks and WordBoundary events.
+    # Offset/duration are typically provided in 100-nanosecond ticks.
+    with open(output_path, "wb") as f:
+        async for chunk in communicate.stream():
+            chunk_type = chunk.get("type")
+            if chunk_type == "audio":
+                f.write(chunk.get("data", b""))
+            elif chunk_type == "WordBoundary":
+                offset = chunk.get("offset", 0)
+                duration = chunk.get("duration", 0)
+                word = chunk.get("text", "")
+
+                # Best-effort conversion: Edge offsets are commonly 100ns ticks.
+                offset_s = float(offset) / 10_000_000
+                duration_s = float(duration) / 10_000_000
+                word_boundaries.append({"offset_s": offset_s, "duration_s": duration_s, "text": word})
+
+    return output_path, word_boundaries
+
 async def get_audio_duration(file_path):
     """Returns the duration of the audio file in seconds."""
     try:
@@ -62,7 +92,7 @@ async def adjust_speed_to_fit(audio_path, max_duration):
 
     # If it fits or max_duration is invalid, return original
     if current_duration <= max_duration or max_duration <= 0:
-        return audio_path
+        return audio_path, 1.0
 
     # Calculate speed factor.
     speed_factor = current_duration / max_duration
@@ -90,11 +120,11 @@ async def adjust_speed_to_fit(audio_path, max_duration):
         stdout, stderr = await process.communicate()
 
         if process.returncode == 0:
-            return str(output_path)
+            return str(output_path), speed_factor
         else:
             err_text = (stderr or b"").decode(errors="replace")
             print(f"Error adjusting speed: ffmpeg returned {process.returncode}: {err_text}")
-            return audio_path
+            return audio_path, 1.0
     except Exception as e:
         print(f"Error adjusting speed: {e}")
-        return audio_path
+        return audio_path, 1.0

@@ -180,7 +180,15 @@ Esta API está pronta para ser hospedada no **Render.com**.
     *   **Runtime:** Python 3
     *   **Build Command:** `pip install -r requirements.txt`
     *   **Start Command:** `uvicorn main:app --host 0.0.0.0 --port $PORT` (Render/Linux)
+  *   **Env Vars (recomendado):**
+    * `JOB_RETENTION_SECONDS` (padrão: 900) — tempo máximo para manter arquivos/metadata.
+    * `CLEANUP_INTERVAL_SECONDS` (padrão: 60) — intervalo do coletor de lixo.
+    * `DELETE_OUTPUT_AFTER_DOWNLOAD` (padrão: 1) — apaga o `output/<job_id>.mp4` após o primeiro download.
 5.  Clique em **Create Web Service**.
+
+Observação sobre armazenamento:
+- `temp/` é removido automaticamente ao final de cada job.
+- `output/` por padrão é apagado após download (e também é limpo pelo job de cleanup após `JOB_RETENTION_SECONDS`).
 
 **Observação sobre o FFmpeg no Render:**
 A biblioteca `imageio-ffmpeg` incluída no `requirements.txt` geralmente baixa um binário estático do FFmpeg automaticamente, o que deve funcionar na maioria dos ambientes Linux do Render sem configuração extra.

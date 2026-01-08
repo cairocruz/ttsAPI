@@ -6,7 +6,7 @@ import requests
 import shutil
 import math
 from pathlib import Path
-from services.tts import generate_speech, adjust_speed_to_fit
+from services.tts import generate_speech_with_word_boundaries, adjust_speed_to_fit
 import imageio_ffmpeg
 
 FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
@@ -43,6 +43,168 @@ def create_srt_content(script_data):
         srt_output += f"{text}\n\n"
 
     return srt_output
+
+
+def _wrap_srt_text(text: str, max_chars_per_line: int = 22, max_lines: int = 2) -> str:
+    words = (text or "").split()
+    if not words:
+        return ""
+
+    lines: list[str] = []
+    current = ""
+    for w in words:
+        candidate = w if not current else f"{current} {w}"
+        if len(candidate) <= max_chars_per_line:
+            current = candidate
+            continue
+
+        if current:
+            lines.append(current)
+            current = w
+        else:
+            # Single word longer than max; hard-cut
+            lines.append(w[:max_chars_per_line])
+            current = w[max_chars_per_line:]
+
+        if len(lines) >= max_lines:
+            break
+
+    if len(lines) < max_lines and current:
+        lines.append(current)
+
+    return "\n".join(lines[:max_lines]).strip()
+
+
+def create_transitional_srt_from_script(script_data, words_per_cue: int = 4, min_cue_duration_s: float = 0.45):
+    """Creates SRT where each segment is split into multiple short cues across its duration."""
+
+    def fmt(seconds: float) -> str:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = int(seconds % 60)
+        ms = int(round((seconds - int(seconds)) * 1000))
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+    items = []
+    for seg in script_data:
+        start_s = float(parse_time_str(seg["start"]))
+        end_s = float(parse_time_str(seg["end"]))
+        duration = max(0.0, end_s - start_s)
+        words = (seg.get("text") or "").split()
+        if duration <= 0 or not words:
+            continue
+
+        # Compute number of cues; reduce if segment is too short.
+        raw_cues = max(1, math.ceil(len(words) / max(1, words_per_cue)))
+        max_cues = max(1, int(duration / min_cue_duration_s))
+        cue_count = min(raw_cues, max_cues) if max_cues > 0 else 1
+        cue_words = max(1, math.ceil(len(words) / cue_count))
+
+        for i in range(cue_count):
+            w_start = i * cue_words
+            w_end = min(len(words), (i + 1) * cue_words)
+            chunk = " ".join(words[w_start:w_end]).strip()
+            if not chunk:
+                continue
+
+            cue_start = start_s + (duration * i / cue_count)
+            cue_end = start_s + (duration * (i + 1) / cue_count)
+            cue_end = min(end_s, max(cue_start + 0.05, cue_end))
+
+            items.append({
+                "start_s": cue_start,
+                "end_s": cue_end,
+                "text": _wrap_srt_text(chunk)
+            })
+
+    out = []
+    for idx, it in enumerate(items, start=1):
+        out.append(str(idx))
+        out.append(f"{fmt(it['start_s'])} --> {fmt(it['end_s'])}")
+        out.append(it["text"].strip())
+        out.append("")
+    return "\n".join(out)
+
+
+def create_transitional_srt_from_audio_segments_word_boundaries(
+    audio_segments,
+    words_per_cue: int = 4,
+    min_cue_duration_s: float = 0.10,
+):
+    """Creates SRT using Edge TTS word boundaries (best sync)."""
+
+    def fmt(seconds: float) -> str:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = int(seconds % 60)
+        ms = int(round((seconds - int(seconds)) * 1000))
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+    items = []
+    for seg in audio_segments:
+        seg_start = float(seg["start"])
+        seg_end = float(seg["end"])
+        speed = float(seg.get("speed_factor") or 1.0)
+        timing_scale = 1.0 / speed if speed > 0 else 1.0
+
+        boundaries = seg.get("word_boundaries") or []
+        words = [b for b in boundaries if (b.get("text") or "").strip()]
+        if not words:
+            continue
+
+        group = []
+        group_start = None
+        group_end = None
+
+        def flush():
+            nonlocal group, group_start, group_end
+            if not group or group_start is None or group_end is None:
+                group = []
+                group_start = None
+                group_end = None
+                return
+
+            cue_start = max(seg_start, group_start)
+            cue_end = min(seg_end, max(cue_start + min_cue_duration_s, group_end))
+            items.append({
+                "start_s": cue_start,
+                "end_s": cue_end,
+                "text": _wrap_srt_text(" ".join(group)),
+            })
+            group = []
+            group_start = None
+            group_end = None
+
+        for w in words:
+            offset_s = float(w.get("offset_s") or 0.0) * timing_scale
+            dur_s = float(w.get("duration_s") or 0.0) * timing_scale
+            w_text = (w.get("text") or "").strip()
+            if not w_text:
+                continue
+
+            w_start = seg_start + offset_s
+            w_end = seg_start + offset_s + max(dur_s, min_cue_duration_s)
+
+            if group_start is None:
+                group_start = w_start
+            group_end = w_end
+            group.append(w_text)
+
+            if len(group) >= words_per_cue:
+                flush()
+
+        flush()
+
+    if not items:
+        return ""
+
+    out = []
+    for idx, it in enumerate(items, start=1):
+        out.append(str(idx))
+        out.append(f"{fmt(it['start_s'])} --> {fmt(it['end_s'])}")
+        out.append(it["text"].strip())
+        out.append("")
+    return "\n".join(out)
 
 async def download_file(url, local_filename):
     """Downloads a file from a URL to a local path asynchronously."""
@@ -92,14 +254,16 @@ async def process_video_task(job_id, video_source, script, options):
 
             raw_audio_path = work_dir / f"segment_{i}_raw.mp3"
 
-            # Generate TTS
-            await generate_speech(item["text"], voice, str(raw_audio_path))
+            # Generate TTS + capture word boundaries for transitional subtitles
+            _, word_boundaries = await generate_speech_with_word_boundaries(
+                item["text"], voice, str(raw_audio_path)
+            )
 
             if not raw_audio_path.exists() or raw_audio_path.stat().st_size == 0:
                 raise Exception(f"TTS generated an empty audio file: {raw_audio_path}")
 
             # Adjust Speed (now async)
-            final_audio_path = await adjust_speed_to_fit(str(raw_audio_path), duration_limit)
+            final_audio_path, speed_factor = await adjust_speed_to_fit(str(raw_audio_path), duration_limit)
 
             if not os.path.exists(final_audio_path) or os.path.getsize(final_audio_path) == 0:
                 raise Exception(f"Audio segment missing/empty after speed adjust: {final_audio_path}")
@@ -107,7 +271,9 @@ async def process_video_task(job_id, video_source, script, options):
             audio_segments.append({
                 'start': start_sec,
                 'end': end_sec,
-                'path': final_audio_path
+                'path': final_audio_path,
+                'word_boundaries': word_boundaries,
+                'speed_factor': speed_factor
             })
 
         # 3. Process with FFmpeg (using filter_complex for robust audio mixing and ducking)
@@ -144,7 +310,11 @@ async def process_video_task(job_id, video_source, script, options):
         video_label = "0:v"
         if options.get('add_subtitles'):
             srt_path = work_dir / "subs.srt"
-            srt_content = create_srt_content(script)
+
+            # Prefer best-sync subtitles from word boundaries; fallback to time-splitting.
+            srt_content = create_transitional_srt_from_audio_segments_word_boundaries(audio_segments)
+            if not srt_content.strip():
+                srt_content = create_transitional_srt_from_script(script)
 
             # File writing is fast, but technically blocking.
             await asyncio.to_thread(lambda: srt_path.write_text(srt_content, encoding="utf-8"))
@@ -178,10 +348,12 @@ async def process_video_task(job_id, video_source, script, options):
                print(f"FFmpeg Error: {err_text}")
                raise Exception(f"FFmpeg transcoding failed: {err_text}")
 
-        # Cleanup (async wrapper for rmtree usually not built-in, run in thread)
-        await asyncio.to_thread(shutil.rmtree, work_dir, ignore_errors=True)
-        return True, None
+        return True, None, output_filename
 
     except Exception as e:
         print(f"Error processing video: {e}")
-        return False, str(e)
+        return False, str(e), None
+
+    finally:
+        # Always remove temp artifacts; output retention is handled elsewhere.
+        await asyncio.to_thread(shutil.rmtree, work_dir, ignore_errors=True)
