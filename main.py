@@ -103,3 +103,17 @@ async def download_video(job_id: str):
         raise HTTPException(status_code=500, detail="File missing on server")
 
     return FileResponse(file_path, media_type="video/mp4", filename=f"narrated_{job_id}.mp4")
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    host = os.getenv("HOST", "127.0.0.1")
+    port = int(os.getenv("PORT", "8000"))
+    reload = os.getenv("RELOAD", "1").lower() not in {"0", "false", "no"}
+
+    kwargs = {"host": host, "port": port, "reload": reload}
+    if reload:
+        kwargs["reload_excludes"] = ["temp/*", "output/*", "temp", "output"]
+
+    uvicorn.run("main:app", **kwargs)

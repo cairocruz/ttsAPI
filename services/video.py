@@ -95,8 +95,14 @@ async def process_video_task(job_id, video_source, script, options):
             # Generate TTS
             await generate_speech(item["text"], voice, str(raw_audio_path))
 
+            if not raw_audio_path.exists() or raw_audio_path.stat().st_size == 0:
+                raise Exception(f"TTS generated an empty audio file: {raw_audio_path}")
+
             # Adjust Speed (now async)
             final_audio_path = await adjust_speed_to_fit(str(raw_audio_path), duration_limit)
+
+            if not os.path.exists(final_audio_path) or os.path.getsize(final_audio_path) == 0:
+                raise Exception(f"Audio segment missing/empty after speed adjust: {final_audio_path}")
 
             audio_segments.append({
                 'start': start_sec,
@@ -116,18 +122,10 @@ async def process_video_task(job_id, video_source, script, options):
         # Build Filter Complex
         filter_complex = []
 
-        # 3a. Ducking Original Audio
-        between_expressions = []
-        for seg in audio_segments:
-            between_expressions.append(f"between(t,{seg['start']},{seg['end']})")
-
-        if between_expressions:
-            combined_between = "+".join(between_expressions)
-            ducking_filter = f"[0:a]volume='if({combined_between}, 0.2, 1.0)':eval=frame[bg_audio]"
-            filter_complex.append(ducking_filter)
-            base_audio_label = "[bg_audio]"
-        else:
-            base_audio_label = "[0:a]"
+        # 3a. Keep original audio at constant volume (no ducking)
+        # User-requested: always keep background audio at 0.2
+        filter_complex.append("[0:a]volume=0.2[bg_audio]")
+        base_audio_label = "[bg_audio]"
 
         # 3b. Mixing Narrations
         mix_inputs = [base_audio_label]
@@ -176,8 +174,9 @@ async def process_video_task(job_id, video_source, script, options):
         stdout, stderr = await process.communicate()
 
         if process.returncode != 0:
-             print(f"FFmpeg Error: {stderr.decode()}")
-             raise Exception("FFmpeg transcoding failed")
+               err_text = (stderr or b"").decode(errors="replace")
+               print(f"FFmpeg Error: {err_text}")
+               raise Exception(f"FFmpeg transcoding failed: {err_text}")
 
         # Cleanup (async wrapper for rmtree usually not built-in, run in thread)
         await asyncio.to_thread(shutil.rmtree, work_dir, ignore_errors=True)

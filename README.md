@@ -29,8 +29,13 @@ cd <seu-repo>
 
 # Crie um ambiente virtual
 python -m venv venv
+
+# Ative o ambiente virtual
 source venv/bin/activate  # Linux/Mac
-# ou .\venv\Scripts\activate no Windows
+# Windows (PowerShell):
+#   .\venv\Scripts\Activate.ps1
+# Windows (cmd.exe):
+#   .\venv\Scripts\activate.bat
 
 # Instale os pacotes
 pip install -r requirements.txt
@@ -39,9 +44,29 @@ pip install -r requirements.txt
 ### 2. Rodar o Servidor
 
 ```bash
-uvicorn main:app --reload
+python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 O servidor iniciará em `http://127.0.0.1:8000`.
+
+Observação importante: em projetos que escrevem arquivos dentro do repo (como `temp/` e `output/`), usar `--reload` pode reiniciar o servidor a cada arquivo criado e cancelar o processamento.
+Se quiser hot-reload, rode assim (excluindo `temp/` e `output/`):
+
+```bash
+python -m uvicorn main:app --reload --reload-exclude temp --reload-exclude output --host 127.0.0.1 --port 8000
+```
+
+Se você receber `WinError 10013` (permissão/porta proibida), tente outra porta (por ex. 8001):
+
+```bash
+python -m uvicorn main:app --reload --host 127.0.0.1 --port 8001
+```
+
+E rode o teste apontando para a porta escolhida:
+
+```bash
+set API_URL=http://127.0.0.1:8001
+python test_api.py
+```
 
 ---
 
@@ -154,7 +179,7 @@ Esta API está pronta para ser hospedada no **Render.com**.
 4.  Configure:
     *   **Runtime:** Python 3
     *   **Build Command:** `pip install -r requirements.txt`
-    *   **Start Command:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
+    *   **Start Command:** `uvicorn main:app --host 0.0.0.0 --port $PORT` (Render/Linux)
 5.  Clique em **Create Web Service**.
 
 **Observação sobre o FFmpeg no Render:**

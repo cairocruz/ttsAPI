@@ -4,8 +4,8 @@ import time
 import os
 
 # Configuration
-API_URL = "http://127.0.0.1:8000"
-VIDEO_PATH = "test_video.mp4"
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+VIDEO_PATH = os.getenv("VIDEO_PATH", "test_video.mp4")
 
 # Sample Script (matching the user's request format)
 SCRIPT = [
